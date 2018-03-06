@@ -64,6 +64,20 @@ class PodRuntime < Sensu::Plugins::Kubernetes::CLI
          short: '-c COUNT',
          long: '--critical',
          proc: proc(&:to_i)
+  
+  option :exclude_namespace,
+         description: 'Exclude the specified list of namespaces',
+         short: '-n NAMESPACES',
+         long: '--exclude-namespace',
+         proc: proc { |a| a.split(',') },
+         default: ''
+
+  option :include_namespace,
+         description: 'Include the specified list of namespaces',
+         short: '-i NAMESPACES',
+         long: '--include-namespace',
+         proc: proc { |a| a.split(',') },
+         default: ''
 
   def run
     pods_list = []
@@ -77,11 +91,15 @@ class PodRuntime < Sensu::Plugins::Kubernetes::CLI
       pods = client.get_pods
     else
       pods = client.get_pods(label_selector: config[:pod_filter].to_s)
+      if pods.empty?
+        unknown 'The filter specified resulted in 0 pods'
+      end
       pods_list = ['all']
     end
 
     pods.each do |pod|
       next if pod.nil?
+      next if should_exclude_namespace(pod.metadata.namespace)
       next unless pods_list.include?(pod.metadata.name) || pods_list.include?('all')
       # Check for Running state
       next unless pod.status.phase == 'Running'
@@ -89,10 +107,10 @@ class PodRuntime < Sensu::Plugins::Kubernetes::CLI
       runtime = (Time.now.utc - pod_stamp.utc).to_i
 
       if !config[:critical_timeout].nil? && runtime > config[:critical_timeout]
-        message << "#{pod.metadata.name} exceeds threshold #{config[:critical_timeout]} "
+        message << "#{pod.metadata.namespace}.#{pod.metadata.name}: #{runtime}, "
         crit = true
       elsif !config[:warn_timeout].nil? && runtime > config[:warn_timeout]
-        message << "#{pod.metadata.name} exceeds threshold #{config[:warn_timeout]} "
+        message << "#{pod.metadata.namespace}.#{pod.metadata.name}: #{runtime}, "
         warn = true
       end
     end
@@ -112,5 +130,10 @@ class PodRuntime < Sensu::Plugins::Kubernetes::CLI
     return list.split(',') if list && list.include?(',')
     return [list] if list
     ['']
+  end
+
+  def should_exclude_namespace(namespace)
+    return !config[:include_namespace].include?(namespace) unless config[:include_namespace].empty?
+    config[:exclude_namespace].include?(namespace)
   end
 end
